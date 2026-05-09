@@ -1,0 +1,40 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun.lockb
+
+# Dependency directories
+node_modules/
+dist/
+.output/
+.nuxt/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Runtime data
+*.local
+
+# SQLite Databases (Crucial for better-sqlite3)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+
+# Editor folders
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
