@@ -59,6 +59,32 @@ async function writeInfo(info: any) {
   await writeFile(INFO_FILE, JSON.stringify(info, null, 2));
 }
 
+async function patchNewSiteStorage(destStorage: string, name: string, siteUrl: string) {
+  // _cms.json — set previewUrl, clear GA id
+  await writeFile(
+    join(destStorage, "_cms.json"),
+    JSON.stringify({ previewUrl: siteUrl, googleAnalyticsId: "" }, null, 2)
+  );
+
+  // Update SiteHeaderLogo.brandName + remove meu-site-specific "signature" prop
+  // in every version's _global/_topbar.json
+  try {
+    const entries = await readdir(destStorage, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith("_")) continue;
+      const topbarPath = join(destStorage, entry.name, "_global", "_topbar.json");
+      if (!existsSync(topbarPath)) continue;
+      const topbar = JSON.parse(await readFile(topbarPath, "utf-8"));
+      const logoBlock = (topbar.blocks ?? []).find((b: any) => b.componentName === "SiteHeaderLogo");
+      if (logoBlock?.props) {
+        logoBlock.props.brandName = name;
+        delete logoBlock.props.signature;
+      }
+      await writeFile(topbarPath, JSON.stringify(topbar, null, 2));
+    }
+  } catch {}
+}
+
 function spawnBuildAndStart(destDir: string, newId: string, newPort: number) {
   const outputEntry = join(destDir, ".output", "server", "index.mjs");
 
@@ -279,11 +305,14 @@ const app = new Elysia()
       await writeFile(envPath, env);
     } catch {}
 
-    // ── Clone storage ─────────────────────────────────────
+    // ── Clone storage (skip _analytics — fresh slate for new site) ───
     const srcStorage  = join(STORAGE_DIR, source);
     const destStorage = join(STORAGE_DIR, newId);
     if (existsSync(srcStorage)) {
-      await cp(srcStorage, destStorage, { recursive: true });
+      await cp(srcStorage, destStorage, {
+        recursive: true,
+        filter: (src) => !src.slice(srcStorage.length + 1).startsWith("_analytics"),
+      });
     } else {
       await mkdir(join(destStorage, "v1", "_global"), { recursive: true });
       await mkdir(join(destStorage, "v1", "home"),    { recursive: true });
@@ -294,6 +323,10 @@ const app = new Elysia()
         lastUpdated: new Date().toISOString()
       }, null, 2));
     }
+    await mkdir(join(destStorage, "_analytics"), { recursive: true });
+
+    // ── Patch _cms.json + all _topbar.json brandName ──────
+    await patchNewSiteStorage(destStorage, name, siteUrl);
 
     // ── Write Caddy config ────────────────────────────────
     const caddyContent = `${newId}.${SITES_DOMAIN}, www.${newId}.${SITES_DOMAIN} {\n  import sirius_rules\n  reverse_proxy localhost:${newPort}\n}\n`;
