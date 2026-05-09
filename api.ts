@@ -78,7 +78,7 @@ async function patchNewSiteStorage(destStorage: string, name: string, siteUrl: s
       const logoBlock = (topbar.blocks ?? []).find((b: any) => b.componentName === "SiteHeaderLogo");
       if (logoBlock?.props) {
         logoBlock.props.brandName = name;
-        delete logoBlock.props.signature;
+        logoBlock.props.signature = "";
       }
       await writeFile(topbarPath, JSON.stringify(topbar, null, 2));
     }
