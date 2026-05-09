@@ -71,7 +71,7 @@ const handleClone = async () => {
       sourceId: cloneForm.value.sourceId || undefined
     });
     if (res?.success) {
-      toast.add({ severity: "success", summary: "Site Criado", detail: `"${res.site.name}" criado na porta ${res.site.port}. Execute bun install na pasta do site.`, life: 6000 });
+      toast.add({ severity: "success", summary: "Site Criado", detail: `"${res.site.name}" em ${res.site.url} — a construir em background (bun install → build → pm2 start). Pronto em 1-2 min.`, life: 8000 });
       showCloneModal.value = false;
       cloneForm.value = { name: "", sourceId: "" };
       await fetchSites();

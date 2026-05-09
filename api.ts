@@ -4,15 +4,22 @@ import { readdir, readFile, writeFile, mkdir, rename, rm, stat, cp } from "node:
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 
 // ==========================================
 // CONFIGURATION
 // ==========================================
-const APPS_ROOT   = process.env.APPS_ROOT || "/home/maga/dev/apps";
-const SITES_DIR   = join(APPS_ROOT, "sites", "web");
-const STORAGE_DIR = join(APPS_ROOT, "storage");
-const ADMIN_DIR   = join(APPS_ROOT, "admin");
-const USERS_FILE  = join(ADMIN_DIR, "data", "users.json");
+const APPS_ROOT      = process.env.APPS_ROOT      || "/home/maga/dev/sirius-eco-system";
+const SITES_DIR      = join(APPS_ROOT, "sites", "web");
+const STORAGE_DIR    = join(APPS_ROOT, "storage");
+const ADMIN_DIR      = join(APPS_ROOT, "admin");
+const INFO_FILE      = join(APPS_ROOT, "sites", "info.json");
+const CADDY_DIR      = join(APPS_ROOT, "sites", "caddy");
+const USERS_FILE     = join(ADMIN_DIR, "data", "users.json");
+const SITES_DOMAIN   = process.env.SITES_DOMAIN   || "siriusstudio.site";
+const CADDY_RELOAD   = process.env.CADDY_RELOAD_CMD || "systemctl reload caddy";
+const BUN_PATH       = process.env.BUN_PATH        || "/home/maga/.bun/bin/bun";
+const PM2_PATH       = process.env.PM2_PATH        || "/usr/local/bin/pm2";
 
 function hashPassword(password: string): string {
   return createHash("sha256").update(`${password}:sirius-admin-2025`).digest("hex");
@@ -38,6 +45,39 @@ async function getFolderSize(dir: string): Promise<number> {
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+async function readInfo(): Promise<{ project: string; last_port: number; sites: any[] }> {
+  try {
+    return JSON.parse(await readFile(INFO_FILE, "utf-8"));
+  } catch {
+    return { project: "Sirius Eco", last_port: 3000, sites: [] };
+  }
+}
+
+async function writeInfo(info: any) {
+  await writeFile(INFO_FILE, JSON.stringify(info, null, 2));
+}
+
+function spawnBuildAndStart(destDir: string, newId: string, newPort: number) {
+  const outputEntry = join(destDir, ".output", "server", "index.mjs");
+
+  const script = [
+    `cd ${destDir}`,
+    `${BUN_PATH} install`,
+    `${BUN_PATH} run build`,
+    `PORT=${newPort} NUXT_SITE_ID=${newId} ${PM2_PATH} start ${outputEntry} --name ${newId} --interpreter ${BUN_PATH}`,
+    // Update info.json status to running
+    `${BUN_PATH} -e "import{readFileSync,writeFileSync}from'fs';const f='${INFO_FILE}';const d=JSON.parse(readFileSync(f,'utf-8'));const s=d.sites.find(x=>x.id==='${newId}');if(s){s.status='running';writeFileSync(f,JSON.stringify(d,null,2))}"`,
+    CADDY_RELOAD,
+  ].join(" && ");
+
+  const child = spawn("bash", ["-c", script], {
+    detached: true,
+    stdio:    "ignore",
+    env:      { ...process.env, HOME: process.env.HOME || "/home/maga" },
+  });
+  child.unref();
 }
 
 async function readUsers(): Promise<any[]> {
@@ -189,7 +229,7 @@ const app = new Elysia()
 
     const { name, sourceId } = body;
     const newId   = name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-    const source  = sourceId || "confraria-vegana";
+    const source  = sourceId || "meu-site";
     const srcDir  = join(SITES_DIR, source);
     const destDir = join(SITES_DIR, newId);
 
@@ -202,9 +242,12 @@ const app = new Elysia()
       return { success: false, error: `Já existe um site com o ID "${newId}".` };
     }
 
-    const nextPort = await getNextPort();
+    // ── Port from info.json ───────────────────────────────
+    const info    = await readInfo();
+    const newPort = info.last_port + 1;
+    const siteUrl = `https://${newId}.${SITES_DOMAIN}`;
 
-    // Copy excluding build artefacts and cloned paused state
+    // ── Clone site files ─────────────────────────────────
     await cp(srcDir, destDir, {
       recursive: true,
       filter: (src: string) => {
@@ -213,27 +256,30 @@ const app = new Elysia()
       }
     });
 
-    // Update package.json
+    // ── Update package.json ───────────────────────────────
     try {
       const pkgPath = join(destDir, "package.json");
       const pkg = JSON.parse(await readFile(pkgPath, "utf-8"));
       pkg.name = newId;
-      if (pkg.scripts?.dev) pkg.scripts.dev = `nuxt dev --port ${nextPort}`;
+      if (pkg.scripts?.dev) pkg.scripts.dev = `nuxt dev --port ${newPort}`;
       await writeFile(pkgPath, JSON.stringify(pkg, null, 2));
     } catch {}
 
-    // Update .env
+    // ── Update .env ───────────────────────────────────────
     try {
       const envPath = join(destDir, ".env");
       let env = await readFile(envPath, "utf-8");
       env = env
-        .replace(/NUXT_SITE_ID=.+/g,            `NUXT_SITE_ID=${newId}`)
-        .replace(/NUXT_PUBLIC_SITE_ID=.+/g,      `NUXT_PUBLIC_SITE_ID=${newId}`)
-        .replace(/NUXT_PUBLIC_SITE_NAME=.+/g,    `NUXT_PUBLIC_SITE_NAME=${name}`);
+        .replace(/^PORT=.+/m,                  `PORT=${newPort}`)
+        .replace(/NUXT_SITE_ID=.+/g,           `NUXT_SITE_ID=${newId}`)
+        .replace(/NUXT_PUBLIC_SITE_ID=.+/g,    `NUXT_PUBLIC_SITE_ID=${newId}`)
+        .replace(/NUXT_PUBLIC_SITE_NAME=.+/g,  `NUXT_PUBLIC_SITE_NAME=${name}`)
+        .replace(/NUXT_PUBLIC_SITE_URL=.+/g,   `NUXT_PUBLIC_SITE_URL=${siteUrl}`);
+      if (!/^PORT=/m.test(env)) env = `PORT=${newPort}\n` + env;
       await writeFile(envPath, env);
     } catch {}
 
-    // Clone storage
+    // ── Clone storage ─────────────────────────────────────
     const srcStorage  = join(STORAGE_DIR, source);
     const destStorage = join(STORAGE_DIR, newId);
     if (existsSync(srcStorage)) {
@@ -249,7 +295,26 @@ const app = new Elysia()
       }, null, 2));
     }
 
-    return { success: true, site: { id: newId, name, port: nextPort } };
+    // ── Write Caddy config ────────────────────────────────
+    const caddyContent = `${newId}.${SITES_DOMAIN}, www.${newId}.${SITES_DOMAIN} {\n  import sirius_rules\n  reverse_proxy localhost:${newPort}\n}\n`;
+    await mkdir(CADDY_DIR, { recursive: true });
+    await writeFile(join(CADDY_DIR, `${newId}.caddy`), caddyContent);
+
+    // ── Update info.json ──────────────────────────────────
+    info.last_port = newPort;
+    info.sites.push({
+      id:     newId,
+      port:   newPort,
+      url:    siteUrl,
+      path:   destDir,
+      status: "building",
+    });
+    await writeInfo(info);
+
+    // ── Spawn: bun install → build → pm2 start → caddy reload (background) ──
+    spawnBuildAndStart(destDir, newId, newPort);
+
+    return { success: true, site: { id: newId, name, port: newPort, url: siteUrl, status: "building" } };
   }, { body: t.Object({ name: t.String(), sourceId: t.Optional(t.String()) }) })
 
   // ─── SITES: Rename ───────────────────────────────────────
